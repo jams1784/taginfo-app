@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TagInfo</title>
+<meta name="description" content="Consulta offline de equipos por tag: fichas, documentos y planos.">
+
+<link rel="manifest" href="./manifest.json">
+<meta name="theme-color" content="#0f172a">
+
+<!-- iOS: Safari no lee manifest.json para instalar, necesita estas etiquetas -->
+<link rel="apple-touch-icon" href="./icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TagInfo">
+
+<link rel="icon" href="./icon-192.png">
+
+<style>
+  :root{
+    --bg:#0f172a;
+    --bg-panel:#16213c;
+    --bg-elevated:#1d2b4d;
+    --border:#2a3a60;
+    --text:#e6ebf5;
+    --text-dim:#93a2c2;
+    --accent:#38bdf8;
+    --accent-dim:#0e7fab;
+    --danger:#f87171;
+    --ok:#4ade80;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;height:100%;}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+  }
+  #app{
+    max-width:640px;
+    margin:0 auto;
+    min-height:100vh;
+    display:flex;
+    flex-direction:column;
+    padding-bottom:env(safe-area-inset-bottom);
+  }
+  header{
+    padding:16px 16px calc(12px + env(safe-area-inset-top)) 16px;
+    padding-top:calc(16px + env(safe-area-inset-top));
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:8px;
+    border-bottom:1px solid var(--border);
+    position:sticky;
+    top:0;
+    background:var(--bg);
+    z-index:10;
+  }
+  header h1{
+    font-size:1.25rem;
+    margin:0;
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+  header h1 .dot{
+    width:9px;height:9px;border-radius:50%;
+    background:var(--ok);
+    flex-shrink:0;
+  }
+  header h1 .dot.offline{ background:var(--text-dim); }
+  .icon-btn{
+    background:var(--bg-elevated);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:10px;
+    padding:8px 10px;
+    font-size:0.85rem;
+    cursor:pointer;
+  }
+  .icon-btn:active{ opacity:0.7; }
+  main{
+    flex:1;
+    padding:16px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .search-row{
+    display:flex;
+    gap:8px;
+  }
+  input, textarea, select{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:10px;
+    padding:11px 12px;
+    font-size:1rem;
+    width:100%;
+    font-family:inherit;
+  }
+  input:focus, textarea:focus, select:focus{
+    outline:none;
+    border-color:var(--accent);
+  }
+  button.primary{
+    background:var(--accent);
+    color:#031018;
+    border:none;
+    border-radius:10px;
+    padding:11px 16px;
+    font-weight:600;
+    font-size:0.95rem;
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  button.primary:active{ background:var(--accent-dim); }
+  button.secondary{
+    background:transparent;
+    color:var(--accent);
+    border:1px solid var(--accent-dim);
+    border-radius:10px;
+    padding:10px 14px;
+    font-size:0.9rem;
+    cursor:pointer;
+  }
+  button.danger{
+    background:transparent;
+    color:var(--danger);
+    border:1px solid var(--danger);
+    border-radius:10px;
+    padding:10px 14px;
+    font-size:0.9rem;
+    cursor:pointer;
+  }
+  button:disabled{ opacity:0.5; cursor:not-allowed; }
+  .list{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .tag-card{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:12px 14px;
+    cursor:pointer;
+    display:flex;
+    flex-direction:column;
+    gap:2px;
+  }
+  .tag-card:active{ background:var(--bg-elevated); }
+  .tag-card .code{
+    font-weight:700;
+    font-size:1.05rem;
+    color:var(--accent);
+    letter-spacing:0.02em;
+  }
+  .tag-card .name{ color:var(--text); font-size:0.95rem; }
+  .tag-card .meta{ color:var(--text-dim); font-size:0.8rem; }
+  .empty-state{
+    text-align:center;
+    color:var(--text-dim);
+    padding:40px 20px;
+    font-size:0.95rem;
+  }
+  .field{ display:flex; flex-direction:column; gap:6px; }
+  .field label{ font-size:0.8rem; color:var(--text-dim); }
+  .form-actions{ display:flex; gap:8px; margin-top:4px; }
+  .panel{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:14px;
+    padding:16px;
+    display:flex;
+    flex-direction:column;
+    gap:14px;
+  }
+  .detail-header{
+    display:flex;
+    justify-content:space-between;
+    align-items:flex-start;
+    gap:10px;
+  }
+  .detail-header h2{
+    margin:0;
+    color:var(--accent);
+    font-size:1.4rem;
+  }
+  .detail-header p{ margin:4px 0 0; color:var(--text-dim); font-size:0.9rem; }
+  .row-actions{ display:flex; gap:8px; flex-wrap:wrap; }
+  .doc-list{ display:flex; flex-direction:column; gap:8px; }
+  .doc-item{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    background:var(--bg-elevated);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:10px 12px;
+  }
+  .doc-item .info{ display:flex; flex-direction:column; overflow:hidden; }
+  .doc-item .doc-name{
+    font-size:0.9rem;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+  }
+  .doc-item .doc-meta{ font-size:0.75rem; color:var(--text-dim); }
+  .doc-actions{ display:flex; gap:6px; flex-shrink:0; }
+  .doc-actions button{
+    background:transparent;
+    border:1px solid var(--border);
+    color:var(--text);
+    border-radius:8px;
+    padding:6px 9px;
+    font-size:0.8rem;
+    cursor:pointer;
+  }
+  .doc-actions button.remove{ color:var(--danger); border-color:var(--danger); }
+  .section-title{
+    font-size:0.85rem;
+    text-transform:uppercase;
+    letter-spacing:0.05em;
+    color:var(--text-dim);
+    margin:0;
+  }
+  .backdrop{
+    position:fixed; inset:0;
+    background:rgba(2,6,20,0.6);
+    display:flex; align-items:flex-end;
+    z-index:50;
+  }
+  .sheet{
+    background:var(--bg);
+    border-top:1px solid var(--border);
+    border-radius:16px 16px 0 0;
+    padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+    width:100%;
+    max-width:640px;
+    margin:0 auto;
+    max-height:85vh;
+    overflow-y:auto;
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+  }
+  .sheet h2{ margin:0; font-size:1.15rem; }
+  .toast{
+    position:fixed;
+    left:50%;
+    bottom:calc(20px + env(safe-area-inset-bottom));
+    transform:translateX(-50%);
+    background:var(--bg-elevated);
+    border:1px solid var(--border);
+    color:var(--text);
+    padding:10px 16px;
+    border-radius:10px;
+    font-size:0.9rem;
+    z-index:100;
+    max-width:90vw;
+    text-align:center;
+    box-shadow:0 4px 16px rgba(0,0,0,0.4);
+  }
+  .hidden{ display:none !important; }
+  .file-input-label{
+    display:inline-block;
+    background:var(--bg-elevated);
+    border:1px dashed var(--border);
+    color:var(--accent);
+    border-radius:10px;
+    padding:10px 14px;
+    font-size:0.9rem;
+    text-align:center;
+    cursor:pointer;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <h1><span id="statusDot" class="dot"></span> TagInfo</h1>
+    <div class="row-actions">
+      <button id="installBtn" class="icon-btn hidden" type="button">Instalar</button>
+      <button id="menuBtn" class="icon-btn" type="button">&#8942;</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="search-row">
+      <input id="searchInput" type="search" placeholder="Buscar por tag o nombre..." autocomplete="off" enterkeyhint="search">
+      <button id="newTagBtn" class="primary" type="button">+ Tag</button>
+    </div>
+
+    <div id="listView" class="list"></div>
+    <div id="emptyState" class="empty-state hidden">
+      No hay tags guardados todavía.<br>Toca "+ Tag" para crear el primero.
+    </div>
+  </main>
+
+</div>
+
+<!-- Detalle de tag -->
+<div id="detailBackdrop" class="backdrop hidden">
+  <div class="sheet">
+    <div class="detail-header">
+      <div>
+        <h2 id="detailCode"></h2>
+        <p id="detailName"></p>
+      </div>
+      <button id="closeDetailBtn" class="icon-btn" type="button">Cerrar</button>
+    </div>
+
+    <p id="detailMeta" style="color:var(--text-dim); font-size:0.85rem; white-space:pre-line; margin:0;"></p>
+
+    <div class="row-actions">
+      <button id="editTagBtn" class="secondary" type="button">Editar</button>
+      <button id="deleteTagBtn" class="danger" type="button">Eliminar tag</button>
+    </div>
+
+    <p class="section-title">Documentos</p>
+    <div id="docList" class="doc-list"></div>
+    <label class="file-input-label">
+      + Agregar documento (PDF, imagen, plano...)
+      <input id="docFileInput" type="file" multiple class="hidden">
+    </label>
+  </div>
+</div>
+
+<!-- Formulario nuevo/editar tag -->
+<div id="formBackdrop" class="backdrop hidden">
+  <div class="sheet">
+    <h2 id="formTitle">Nuevo tag</h2>
+    <form id="tagForm" style="display:flex; flex-direction:column; gap:12px;">
+      <div class="field">
+        <label for="fieldTag">Tag *</label>
+        <input id="fieldTag" type="text" placeholder="Ej: PT-101" required autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="fieldName">Nombre / descripción</label>
+        <input id="fieldName" type="text" placeholder="Ej: Transmisor de presión línea 4" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="fieldCategory">Categoría</label>
+        <input id="fieldCategory" type="text" placeholder="Ej: Instrumentación" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="fieldLocation">Ubicación</label>
+        <input id="fieldLocation" type="text" placeholder="Ej: Planta 2 - Sala eléctrica" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="fieldNotes">Notas</label>
+        <textarea id="fieldNotes" rows="3" placeholder="Notas adicionales..."></textarea>
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="primary">Guardar</button>
+        <button type="button" id="cancelFormBtn" class="secondary">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- Menú (export/import) -->
+<div id="menuBackdrop" class="backdrop hidden">
+  <div class="sheet">
+    <h2>Opciones</h2>
+    <button id="exportBtn" class="secondary" type="button">Exportar respaldo (.json)</button>
+    <label class="file-input-label">
+      Importar respaldo (.json)
+      <input id="importFileInput" type="file" accept="application/json" class="hidden">
+    </label>
+    <p style="color:var(--text-dim); font-size:0.8rem; margin:4px 0 0;">
+      El respaldo incluye todos los tags y documentos guardados en este dispositivo.
+    </p>
+    <button id="closeMenuBtn" class="secondary" type="button">Cerrar</button>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="./app.js"></script>
+</body>
+</html>
