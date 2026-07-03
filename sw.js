@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'taginfo-cache-v1';
+const CACHE_NAME = 'taginfo-cache-v3';
 
 // Rutas relativas al propio sw.js: funcionan igual en la raíz de un
 // dominio o dentro de un subpath de GitHub Pages (usuario.github.io/repo/).
@@ -11,6 +11,10 @@ const APP_SHELL = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
+  './vendor/pdf.min.mjs',
+  './vendor/pdf.worker.min.mjs',
+  './vendor/xlsx.full.min.js',
+  './vendor/mammoth.browser.min.js',
 ];
 
 self.addEventListener('install', (event) => {

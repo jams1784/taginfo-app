@@ -1,7 +1,7 @@
 {
   "name": "TagInfo",
   "short_name": "TagInfo",
-  "description": "Consulta offline de equipos por tag: fichas, documentos y planos.",
+  "description": "Carga, extracción y búsqueda offline de información técnica en PDF, Excel y Word.",
   "id": "./",
   "start_url": "./index.html",
   "scope": "./",

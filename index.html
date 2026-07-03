@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>TagInfo</title>
-<meta name="description" content="Consulta offline de equipos por tag: fichas, documentos y planos.">
+<meta name="description" content="Carga, extracción y búsqueda offline de información técnica en PDF, Excel y Word.">
 
 <link rel="manifest" href="./manifest.json">
 <meta name="theme-color" content="#0f172a">
@@ -279,6 +279,132 @@
     text-align:center;
     cursor:pointer;
   }
+  .document-toolbar{
+    display:grid;
+    grid-template-columns:1fr auto;
+    gap:8px;
+  }
+  .document-toolbar .file-input-label{
+    border-style:solid;
+    background:var(--accent);
+    border-color:var(--accent);
+    color:#031018;
+    font-weight:700;
+  }
+  .search-help{
+    color:var(--text-dim);
+    font-size:0.8rem;
+    line-height:1.4;
+    margin:-4px 2px 0;
+  }
+  .progress-panel{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:12px;
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .progress-track{
+    height:7px;
+    background:var(--bg-elevated);
+    border-radius:999px;
+    overflow:hidden;
+  }
+  .progress-bar{
+    height:100%;
+    width:0;
+    background:var(--accent);
+    transition:width 180ms ease;
+  }
+  .progress-text{ color:var(--text-dim); font-size:0.82rem; }
+  .results-section{
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+  }
+  .result-card{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:12px;
+    padding:13px;
+    display:flex;
+    flex-direction:column;
+    gap:9px;
+  }
+  .result-title{
+    font-weight:700;
+    overflow-wrap:anywhere;
+  }
+  .result-meta{
+    color:var(--text-dim);
+    font-size:0.78rem;
+  }
+  .match{
+    border-left:3px solid var(--accent-dim);
+    padding-left:10px;
+    font-size:0.86rem;
+    line-height:1.45;
+    white-space:pre-line;
+    overflow-wrap:anywhere;
+  }
+  .match .locator{
+    display:block;
+    color:var(--accent);
+    font-size:0.76rem;
+    font-weight:700;
+    margin-bottom:2px;
+  }
+  mark{
+    background:#facc15;
+    color:#111827;
+    border-radius:3px;
+    padding:0 2px;
+  }
+  .library-list{
+    display:flex;
+    flex-direction:column;
+    gap:8px;
+  }
+  .library-item{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:11px;
+    padding:11px;
+    display:flex;
+    flex-direction:column;
+    gap:7px;
+  }
+  .library-name{
+    font-weight:600;
+    overflow-wrap:anywhere;
+  }
+  .status-ok{ color:var(--ok); }
+  .status-warning{ color:#facc15; }
+  .status-error{ color:var(--danger); }
+  .source-view{
+    display:flex;
+    flex-direction:column;
+    gap:12px;
+  }
+  .source-passage{
+    background:var(--bg-panel);
+    border:1px solid var(--border);
+    border-radius:10px;
+    padding:12px;
+    white-space:pre-wrap;
+    overflow-wrap:anywhere;
+    font-size:0.86rem;
+    line-height:1.5;
+  }
+  .source-passage .locator{
+    display:block;
+    color:var(--accent);
+    font-weight:700;
+    font-size:0.78rem;
+    margin-bottom:6px;
+  }
 </style>
 </head>
 <body>
@@ -294,16 +420,69 @@
 
   <main>
     <div class="search-row">
-      <input id="searchInput" type="search" placeholder="Buscar por tag o nombre..." autocomplete="off" enterkeyhint="search">
+      <input id="searchInput" type="search" placeholder="Buscar tag, equipo o cualquier dato..." autocomplete="off" enterkeyhint="search">
       <button id="newTagBtn" class="primary" type="button">+ Tag</button>
     </div>
 
+    <p class="search-help">La búsqueda revisa los tags y el contenido extraído de todos los documentos.</p>
+
+    <div class="document-toolbar">
+      <label class="file-input-label">
+        Cargar documentos
+        <input id="projectFileInput" type="file" accept=".pdf,.xlsx,.xls,.xlsm,.csv,.docx,.txt,.md" multiple class="hidden">
+      </label>
+      <button id="libraryBtn" class="secondary" type="button">Documentos (0)</button>
+    </div>
+
+    <div id="processingPanel" class="progress-panel hidden">
+      <div id="processingText" class="progress-text">Preparando documentos...</div>
+      <div class="progress-track"><div id="processingBar" class="progress-bar"></div></div>
+    </div>
+
+    <section id="documentResultsSection" class="results-section hidden">
+      <p id="documentResultsTitle" class="section-title">Información encontrada</p>
+      <div id="documentResults" class="results-section"></div>
+    </section>
+
+    <p id="tagsTitle" class="section-title hidden">Tags guardados</p>
     <div id="listView" class="list"></div>
     <div id="emptyState" class="empty-state hidden">
       No hay tags guardados todavía.<br>Toca "+ Tag" para crear el primero.
     </div>
   </main>
 
+</div>
+
+<!-- Biblioteca de documentos del proyecto -->
+<div id="libraryBackdrop" class="backdrop hidden">
+  <div class="sheet">
+    <div class="detail-header">
+      <div>
+        <h2>Documentos del proyecto</h2>
+        <p id="librarySummary"></p>
+      </div>
+      <button id="closeLibraryBtn" class="icon-btn" type="button">Cerrar</button>
+    </div>
+    <label class="file-input-label">
+      + Cargar más documentos
+      <input id="libraryFileInput" type="file" accept=".pdf,.xlsx,.xls,.xlsm,.csv,.docx,.txt,.md" multiple class="hidden">
+    </label>
+    <div id="libraryList" class="library-list"></div>
+  </div>
+</div>
+
+<!-- Texto extraído y coincidencias de una fuente -->
+<div id="sourceBackdrop" class="backdrop hidden">
+  <div class="sheet">
+    <div class="detail-header">
+      <div>
+        <h2 id="sourceTitle">Información extraída</h2>
+        <p id="sourceMeta"></p>
+      </div>
+      <button id="closeSourceBtn" class="icon-btn" type="button">Cerrar</button>
+    </div>
+    <div id="sourceContent" class="source-view"></div>
+  </div>
 </div>
 
 <!-- Detalle de tag -->
@@ -384,6 +563,8 @@
 
 <div id="toast" class="toast hidden"></div>
 
+<script src="./vendor/xlsx.full.min.js"></script>
+<script src="./vendor/mammoth.browser.min.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

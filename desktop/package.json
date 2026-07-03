@@ -1,0 +1,38 @@
+{
+  "name": "taginfo-desktop",
+  "version": "1.0.0",
+  "description": "TagInfo para escritorio (Windows) - consulta offline de equipos por tag y documentos técnicos.",
+  "private": true,
+  "main": "main.js",
+  "scripts": {
+    "prestart": "node scripts/copy-assets.js",
+    "start": "electron .",
+    "predist": "node scripts/copy-assets.js",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.tikad.taginfo",
+    "productName": "TagInfo",
+    "files": [
+      "main.js",
+      "app/**"
+    ],
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "app/icon-512.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

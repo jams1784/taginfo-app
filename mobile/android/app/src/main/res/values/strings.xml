@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TagInfo</string>
+    <string name="title_activity_main">TagInfo</string>
+    <string name="package_name">com.tikad.taginfo</string>
+    <string name="custom_url_scheme">com.tikad.taginfo</string>
+</resources>
