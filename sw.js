@@ -1,6 +1,6 @@
 'use strict';
 
-const CACHE_NAME = 'taginfo-cache-v3';
+const CACHE_NAME = 'taginfo-cache-v5';
 
 // Rutas relativas al propio sw.js: funcionan igual en la raíz de un
 // dominio o dentro de un subpath de GitHub Pages (usuario.github.io/repo/).

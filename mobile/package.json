@@ -4,7 +4,12 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "node --check ../app.js && node --check scripts/copy-assets.js",
+    "copy": "node scripts/copy-assets.js",
+    "sync": "npm run copy && cap sync android",
+    "android:debug": "npm run sync && cd android && gradlew.bat assembleDebug",
+    "android:release": "npm run sync && cd android && gradlew.bat assembleRelease",
+    "android:open": "npm run sync && cap open android"
   },
   "keywords": [],
   "author": "",

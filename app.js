@@ -7,13 +7,15 @@
    Store "projectDocuments": texto y metadatos extraídos.
    Store "projectFiles": archivos originales, separados para que una
    búsqueda no tenga que cargar todos los binarios en memoria.
+   Store "projectCatalog": catálogo liviano para mostrar la biblioteca.
+   Store "projectSearchIndex": términos persistentes por documento.
    Los archivos se guardan como ArrayBuffer (no Blob) por
    compatibilidad con versiones antiguas de Safari/iOS que no
    soportaban clonar Blobs dentro de IndexedDB.
 ------------------------------------------------------------------ */
 
 const DB_NAME = 'taginfo-db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 let dbPromise = null;
 
 function openDB() {
@@ -35,6 +37,34 @@ function openDB() {
       }
       if (!db.objectStoreNames.contains('projectFiles')) {
         db.createObjectStore('projectFiles', { keyPath: 'id' });
+      }
+      let catalogStore = null;
+      let searchIndexStore = null;
+      if (!db.objectStoreNames.contains('projectCatalog')) {
+        catalogStore = db.createObjectStore('projectCatalog', { keyPath: 'id' });
+        catalogStore.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('projectSearchIndex')) {
+        searchIndexStore = db.createObjectStore('projectSearchIndex', { keyPath: 'id' });
+        searchIndexStore.createIndex('terms', 'terms', { unique: false, multiEntry: true });
+      }
+
+      // Construye el catálogo y el índice para documentos de versiones previas.
+      if (catalogStore || searchIndexStore) {
+        const existingDocs = req.transaction.objectStore('projectDocuments');
+        existingDocs.openCursor().onsuccess = (event) => {
+          const cursor = event.target.result;
+          if (!cursor) return;
+          const metadata = cursor.value;
+          if (catalogStore) catalogStore.put(buildProjectCatalogRecord(metadata, metadata.id));
+          if (searchIndexStore) {
+            searchIndexStore.put({
+              id: metadata.id,
+              terms: collectSearchTerms(metadata.name, metadata.passages),
+            });
+          }
+          cursor.continue();
+        };
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -136,12 +166,24 @@ async function getAllDocuments() {
   return reqToPromise(store.getAll());
 }
 
+async function getAllDocumentIds() {
+  const t = await tx('documents', 'readonly');
+  return reqToPromise(t.objectStore('documents').getAllKeys());
+}
+
+async function getDocumentById(id) {
+  const t = await tx('documents', 'readonly');
+  return reqToPromise(t.objectStore('documents').get(id));
+}
+
 /* ---------------- Data access: project library ---------------- */
 
 async function addProjectDocument(metadata, data) {
-  const t = await tx(['projectDocuments', 'projectFiles'], 'readwrite');
+  const t = await tx(['projectDocuments', 'projectFiles', 'projectCatalog', 'projectSearchIndex'], 'readwrite');
   const metadataStore = t.objectStore('projectDocuments');
   const fileStore = t.objectStore('projectFiles');
+  const catalogStore = t.objectStore('projectCatalog');
+  const searchIndexStore = t.objectStore('projectSearchIndex');
   const completed = new Promise((resolve, reject) => {
     t.oncomplete = resolve;
     t.onerror = () => reject(t.error);
@@ -151,6 +193,11 @@ async function addProjectDocument(metadata, data) {
   const id = await reqToPromise(metadataStore.add(metadata));
   try {
     fileStore.put({ id, data });
+    catalogStore.put(buildProjectCatalogRecord(metadata, id));
+    searchIndexStore.put({
+      id,
+      terms: collectSearchTerms(metadata.name, metadata.passages),
+    });
   } catch (err) {
     t.abort();
     throw err;
@@ -164,6 +211,11 @@ async function getAllProjectDocuments() {
   return reqToPromise(t.objectStore('projectDocuments').getAll());
 }
 
+async function getAllProjectCatalog() {
+  const t = await tx('projectCatalog', 'readonly');
+  return reqToPromise(t.objectStore('projectCatalog').getAll());
+}
+
 async function getProjectDocument(id) {
   const t = await tx('projectDocuments', 'readonly');
   return reqToPromise(t.objectStore('projectDocuments').get(id));
@@ -175,13 +227,43 @@ async function getProjectFile(id) {
 }
 
 async function deleteProjectDocument(id) {
-  const t = await tx(['projectDocuments', 'projectFiles'], 'readwrite');
+  const t = await tx(['projectDocuments', 'projectFiles', 'projectCatalog', 'projectSearchIndex'], 'readwrite');
   t.objectStore('projectDocuments').delete(id);
   t.objectStore('projectFiles').delete(id);
+  t.objectStore('projectCatalog').delete(id);
+  t.objectStore('projectSearchIndex').delete(id);
   return new Promise((resolve, reject) => {
     t.oncomplete = resolve;
     t.onerror = () => reject(t.error);
   });
+}
+
+async function searchProjectDocuments(query) {
+  const terms = tokenizeForSearch(query);
+  if (!terms.length) return [];
+
+  const indexTx = await tx('projectSearchIndex', 'readonly');
+  const index = indexTx.objectStore('projectSearchIndex').index('terms');
+  const requests = terms.map((term) => {
+    const upperBound = `${term}\uffff`;
+    return reqToPromise(index.getAllKeys(IDBKeyRange.bound(term, upperBound)));
+  });
+  const keyGroups = await Promise.all(requests);
+  if (keyGroups.some((keys) => keys.length === 0)) return [];
+
+  let candidateIds = new Set(keyGroups[0]);
+  for (const keys of keyGroups.slice(1)) {
+    const current = new Set(keys);
+    candidateIds = new Set(Array.from(candidateIds).filter((id) => current.has(id)));
+    if (!candidateIds.size) return [];
+  }
+
+  const documentTx = await tx('projectDocuments', 'readonly');
+  const store = documentTx.objectStore('projectDocuments');
+  const documents = await Promise.all(
+    Array.from(candidateIds).map((id) => reqToPromise(store.get(id)))
+  );
+  return documents.filter((doc) => doc && projectDocumentMatches(doc, query));
 }
 
 /* ---------------- UI state & helpers ---------------- */
@@ -225,6 +307,40 @@ function normalizeForSearch(str) {
   return String(str || '').toLowerCase().normalize('NFD').replace(DIACRITICS_RE, '');
 }
 
+function tokenizeForSearch(value) {
+  const normalized = normalizeForSearch(value);
+  const matches = normalized.match(/[a-z0-9]+(?:[-_.\/][a-z0-9]+)*/g) || [];
+  const terms = new Set();
+  for (const match of matches) {
+    terms.add(match);
+    match.split(/[-_.\/]+/).filter(Boolean).forEach((part) => terms.add(part));
+  }
+  return Array.from(terms);
+}
+
+function collectSearchTerms(name, passages = []) {
+  const terms = new Set(tokenizeForSearch(name));
+  for (const passage of passages || []) {
+    tokenizeForSearch(passage.text).forEach((term) => terms.add(term));
+  }
+  return Array.from(terms);
+}
+
+function buildProjectCatalogRecord(metadata, id = metadata.id) {
+  return {
+    id,
+    name: metadata.name,
+    type: metadata.type,
+    size: metadata.size,
+    createdAt: metadata.createdAt,
+    extractedAt: metadata.extractedAt,
+    format: metadata.format,
+    status: metadata.status,
+    extractionMessage: metadata.extractionMessage,
+    passageCount: (metadata.passages || []).length,
+  };
+}
+
 /* ---------------- Project document extraction ---------------- */
 
 const projectFileInput = el('projectFileInput');
@@ -246,6 +362,10 @@ const sourceContent = el('sourceContent');
 let projectDocsCache = [];
 let pdfJsPromise = null;
 let searchTimer = null;
+let searchRequestId = 0;
+let documentResultLimit = 20;
+let lastDocumentResultQuery = '';
+let libraryResultLimit = 50;
 
 function fileExtension(name) {
   const dot = String(name).lastIndexOf('.');
@@ -320,16 +440,22 @@ function rowToText(row, headers, useHeaders) {
 }
 
 function detectHeaderIndex(rows) {
-  const sampleSize = Math.min(rows.length, 5);
+  const headerHint = /\b(tag|codigo|code|descripcion|description|nombre|name|equipo|equipment|instrumento|instrument|tipo|type|marca|brand|fabricante|manufacturer|modelo|model|serie|serial|ubicacion|location|area|unidad|unit|rango|range|servicio|service|sistema|system|plano|drawing|documento|document|fecha|date|estado|status)\b/;
+  const sampleSize = Math.min(rows.length, 10);
   let bestIndex = -1;
-  let bestCount = 1;
+  let bestScore = 0;
   for (let i = 0; i < sampleSize; i += 1) {
-    const count = rows[i].filter((value) => String(value).trim()).length;
-    if (count > bestCount) {
-      bestCount = count;
+    const values = rows[i].map((value) => String(value).trim()).filter(Boolean);
+    if (values.length < 2) continue;
+    const hints = values.filter((value) => headerHint.test(normalizeForSearch(value))).length;
+    if (!hints) continue;
+    const score = (hints * 100) + values.length;
+    if (score > bestScore) {
+      bestScore = score;
       bestIndex = i;
     }
   }
+  // Ante la duda no inventa encabezados: las filas se indexan como texto plano.
   return bestIndex;
 }
 
@@ -346,8 +472,8 @@ async function extractSpreadsheet(buffer) {
       defval: '',
       blankrows: false,
     });
-    // La fila con más celdas llenas entre las primeras es el encabezado real;
-    // evita que una fila de título/banner (pocas celdas) se detecte como tal.
+    // Usa vocabulario típico de encabezados. Si no hay evidencia suficiente,
+    // conserva las filas como texto plano en vez de usar datos como etiquetas.
     const headerIndex = detectHeaderIndex(rows);
     const headers = headerIndex >= 0 ? rows[headerIndex] : [];
 
@@ -403,12 +529,8 @@ async function extractProjectFile(file, buffer) {
 }
 
 async function reloadProjectDocsCache() {
-  projectDocsCache = await getAllProjectDocuments();
+  projectDocsCache = await getAllProjectCatalog();
   projectDocsCache.sort((a, b) => b.createdAt - a.createdAt);
-  for (const doc of projectDocsCache) {
-    doc._normalizedName = normalizeForSearch(doc.name);
-    doc._normalizedPassages = (doc.passages || []).map((passage) => normalizeForSearch(passage.text));
-  }
   el('libraryBtn').textContent = `Documentos (${projectDocsCache.length})`;
   el('librarySummary').textContent = `${projectDocsCache.length} archivo${projectDocsCache.length === 1 ? '' : 's'} cargado${projectDocsCache.length === 1 ? '' : 's'}`;
 }
@@ -553,8 +675,11 @@ function projectDocumentMatches(doc, query) {
   const q = normalizeForSearch(query).trim();
   if (!q) return false;
   const terms = q.split(/\s+/).filter(Boolean);
-  if (doc._normalizedName.includes(q)) return true;
-  return (doc._normalizedPassages || []).some((text) =>
+  const normalizedName = doc._normalizedName || normalizeForSearch(doc.name);
+  const normalizedPassages = doc._normalizedPassages ||
+    (doc.passages || []).map((passage) => normalizeForSearch(passage.text));
+  if (normalizedName.includes(q)) return true;
+  return normalizedPassages.some((text) =>
     text.includes(q) || terms.every((term) => text.includes(term))
   );
 }
@@ -622,19 +747,39 @@ function openSourceView(doc, query = '') {
   sourceBackdrop.classList.remove('hidden');
 }
 
-function renderDocumentResults(query) {
+async function openSourceViewById(id, query = '') {
+  const doc = await getProjectDocument(id);
+  if (!doc) {
+    showToast('No se encontró la información extraída.');
+    return;
+  }
+  openSourceView(doc, query);
+}
+
+async function renderDocumentResults(query, requestId) {
   const q = query.trim();
   documentResults.textContent = '';
   if (!q) {
+    lastDocumentResultQuery = '';
+    documentResultLimit = 20;
     documentResultsSection.classList.add('hidden');
     return 0;
   }
-  const matches = projectDocsCache.filter((doc) => projectDocumentMatches(doc, q));
+  if (q !== lastDocumentResultQuery) {
+    lastDocumentResultQuery = q;
+    documentResultLimit = 20;
+  }
+  const matches = await searchProjectDocuments(q);
+  if (requestId !== searchRequestId) return null;
+  // Los documentos con más coincidencias exactas del tag/dato buscado van primero;
+  // a igualdad de coincidencias, el más reciente.
+  const ranked = matches.map((doc) => ({ doc, passages: matchingPassages(doc, q) }));
+  ranked.sort((a, b) => b.passages.length - a.passages.length || b.doc.createdAt - a.doc.createdAt);
   documentResultsSection.classList.remove('hidden');
   documentResultsTitle.textContent = `${matches.length} documento${matches.length === 1 ? '' : 's'} con información relacionada`;
 
-  for (const doc of matches) {
-    const passages = matchingPassages(doc, q);
+  const visibleMatches = ranked.slice(0, documentResultLimit);
+  for (const { doc, passages } of visibleMatches) {
     const card = document.createElement('article');
     card.className = 'result-card';
     const title = document.createElement('div');
@@ -658,7 +803,7 @@ function renderDocumentResults(query) {
       match.appendChild(text);
       card.appendChild(match);
     });
-    if (!passages.length && doc._normalizedName.includes(normalizeForSearch(q))) {
+    if (!passages.length && normalizeForSearch(doc.name).includes(normalizeForSearch(q))) {
       const match = document.createElement('div');
       match.className = 'match';
       match.textContent = 'La búsqueda coincide con el nombre del archivo.';
@@ -676,6 +821,18 @@ function renderDocumentResults(query) {
     card.appendChild(actions);
     documentResults.appendChild(card);
   }
+
+  if (visibleMatches.length < matches.length) {
+    const remaining = matches.length - visibleMatches.length;
+    documentResults.appendChild(createButton(
+      `Mostrar más documentos (${Math.min(20, remaining)} de ${remaining})`,
+      'secondary',
+      () => {
+        documentResultLimit += 20;
+        renderSearch();
+      }
+    ));
+  }
   return matches.length;
 }
 
@@ -688,7 +845,8 @@ function renderLibrary() {
     libraryList.appendChild(empty);
     return;
   }
-  for (const doc of projectDocsCache) {
+  const visibleDocuments = projectDocsCache.slice(0, libraryResultLimit);
+  for (const doc of visibleDocuments) {
     const item = document.createElement('div');
     item.className = 'library-item';
     const name = document.createElement('div');
@@ -703,7 +861,7 @@ function renderLibrary() {
     status.textContent = `${statusInfo.text}. ${doc.extractionMessage || ''}`.trim();
     const actions = document.createElement('div');
     actions.className = 'row-actions';
-    actions.appendChild(createButton('Ver texto', 'secondary', () => openSourceView(doc)));
+    actions.appendChild(createButton('Ver texto', 'secondary', () => openSourceViewById(doc.id)));
     actions.appendChild(createButton('Abrir', 'secondary', () => openProjectFile(doc.id)));
     actions.appendChild(createButton('Eliminar', 'danger', async () => {
       if (!confirm(`¿Eliminar “${doc.name}” de la biblioteca?`)) return;
@@ -719,6 +877,18 @@ function renderLibrary() {
     item.appendChild(actions);
     libraryList.appendChild(item);
   }
+
+  if (visibleDocuments.length < projectDocsCache.length) {
+    const remaining = projectDocsCache.length - visibleDocuments.length;
+    libraryList.appendChild(createButton(
+      `Mostrar más documentos (${Math.min(50, remaining)} de ${remaining})`,
+      'secondary',
+      () => {
+        libraryResultLimit += 50;
+        renderLibrary();
+      }
+    ));
+  }
 }
 
 projectFileInput.addEventListener('change', async () => {
@@ -732,6 +902,7 @@ libraryFileInput.addEventListener('change', async () => {
   await processProjectFiles(files);
 });
 el('libraryBtn').addEventListener('click', () => {
+  libraryResultLimit = 50;
   renderLibrary();
   libraryBackdrop.classList.remove('hidden');
 });
@@ -745,9 +916,12 @@ sourceBackdrop.addEventListener('click', (event) => {
 });
 
 async function renderSearch() {
+  const requestId = ++searchRequestId;
   const query = searchInput.value.trim();
-  const documentMatchCount = renderDocumentResults(query);
+  const documentMatchCount = await renderDocumentResults(query, requestId);
+  if (requestId !== searchRequestId || documentMatchCount === null) return;
   const tagStats = await renderList(query);
+  if (requestId !== searchRequestId) return;
   if (query) {
     if (documentMatchCount + tagStats.filtered === 0) {
       emptyState.classList.remove('hidden');
@@ -1048,49 +1222,109 @@ function base64ToBuffer(base64) {
   return bytes.buffer;
 }
 
-el('exportBtn').addEventListener('click', async () => {
-  showToast('Generando respaldo...');
-  const tags = await getAllTags();
-  const docs = await getAllDocuments();
-  const projectDocuments = await getAllProjectDocuments();
-  const projectLibrary = [];
-  for (const metadata of projectDocuments) {
-    const storedFile = await getProjectFile(metadata.id);
-    if (!storedFile) continue;
-    const { id, ...portableMetadata } = metadata;
-    projectLibrary.push({
-      ...portableMetadata,
-      dataBase64: bufferToBase64(storedFile.data),
-    });
+function createBackupStream() {
+  const encoder = new TextEncoder();
+  const write = (controller, value) => controller.enqueue(encoder.encode(value));
+
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        const tags = await getAllTags();
+        write(controller, `{"app":"taginfo","version":2,"exportedAt":${JSON.stringify(new Date().toISOString())},"tags":${JSON.stringify(tags)},"documents":[`);
+
+        const documentIds = await getAllDocumentIds();
+        let first = true;
+        for (const id of documentIds) {
+          const doc = await getDocumentById(id);
+          if (!doc) continue;
+          const portable = {
+            tag: doc.tag,
+            name: doc.name,
+            type: doc.type,
+            size: doc.size,
+            createdAt: doc.createdAt,
+            dataBase64: bufferToBase64(doc.data),
+          };
+          write(controller, `${first ? '' : ','}${JSON.stringify(portable)}`);
+          first = false;
+        }
+
+        write(controller, '],"projectDocuments":[');
+        const catalog = await getAllProjectCatalog();
+        first = true;
+        for (const entry of catalog) {
+          const [metadata, storedFile] = await Promise.all([
+            getProjectDocument(entry.id),
+            getProjectFile(entry.id),
+          ]);
+          if (!metadata || !storedFile) continue;
+          const { id, ...portableMetadata } = metadata;
+          const portable = {
+            ...portableMetadata,
+            dataBase64: bufferToBase64(storedFile.data),
+          };
+          write(controller, `${first ? '' : ','}${JSON.stringify(portable)}`);
+          first = false;
+        }
+        write(controller, ']}');
+        controller.close();
+      } catch (err) {
+        controller.error(err);
+      }
+    },
+  });
+}
+
+async function downloadBackupStream(stream, filename, fileHandle) {
+  if (fileHandle) {
+    const writable = await fileHandle.createWritable();
+    await stream.pipeTo(writable);
+    return;
   }
 
-  const payload = {
-    app: 'taginfo',
-    version: 2,
-    exportedAt: new Date().toISOString(),
-    tags,
-    documents: docs.map((d) => ({
-      tag: d.tag,
-      name: d.name,
-      type: d.type,
-      size: d.size,
-      createdAt: d.createdAt,
-      dataBase64: bufferToBase64(d.data),
-    })),
-    projectDocuments: projectLibrary,
-  };
-
-  const blob = new Blob([JSON.stringify(payload)], { type: 'application/json' });
+  // Compatibilidad para navegadores sin acceso directo al sistema de archivos.
+  // El flujo evita construir un objeto JSON gigante antes de crear el Blob.
+  const blob = await new Response(stream, {
+    headers: { 'Content-Type': 'application/json' },
+  }).blob();
   const url = URL.createObjectURL(blob);
-  const stamp = new Date().toISOString().slice(0, 10);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `taginfo-backup-${stamp}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
-  showToast('Respaldo descargado.');
+}
+
+el('exportBtn').addEventListener('click', async () => {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const filename = `taginfo-backup-${stamp}.json`;
+  let fileHandle = null;
+
+  if ('showSaveFilePicker' in window) {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: 'Respaldo de TagInfo',
+          accept: { 'application/json': ['.json'] },
+        }],
+      });
+    } catch (err) {
+      if (err.name === 'AbortError') return;
+      console.warn('No se pudo abrir el selector de destino; se usará la descarga normal.', err);
+    }
+  }
+
+  try {
+    showToast('Generando respaldo...');
+    await downloadBackupStream(createBackupStream(), filename, fileHandle);
+    showToast('Respaldo guardado.');
+  } catch (err) {
+    console.error(err);
+    showToast('No se pudo generar el respaldo.');
+  }
 });
 
 el('importFileInput').addEventListener('change', async () => {
